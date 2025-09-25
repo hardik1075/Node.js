@@ -1,0 +1,77 @@
+import express from 'express';
+
+const app = express();
+
+// Built-in JSON body parser
+app.use(express.json());
+
+// In-memory store with seeded demo data
+let cards = [
+  { id: 1, suit: 'Hearts',   value: 'Ace'  },
+  { id: 2, suit: 'Spades',   value: 'King' },
+  { id: 3, suit: 'Diamonds', value: 'Queen'}
+];
+
+// Utility: get next id safely
+const nextId = () => (cards.length ? Math.max(...cards.map(c => c.id)) + 1 : 1);
+
+// Health route
+app.get('/', (_req, res) => {
+  res.json({
+    service: 'Playing Cards API',
+    endpoints: ['/cards', '/cards/:id'],
+    methods: ['GET', 'POST', 'DELETE']
+  });
+});
+
+// GET /cards - list all cards
+app.get('/cards', (_req, res) => {
+  res.status(200).json(cards);
+});
+
+// GET /cards/:id - get one card by id
+app.get('/cards/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const found = cards.find(c => c.id === id);
+  if (!found) {
+    return res.status(404).json({ message: `Card with ID ${id} not found` });
+  }
+  res.status(200).json(found);
+});
+
+// POST /cards - add a new card
+// Body: { "suit": "Clubs", "value": "Jack" }
+app.post('/cards', (req, res) => {
+  const { suit, value } = req.body || {};
+  if (!suit || !value) {
+    return res.status(400).json({ message: 'Both suit and value are required' });
+  }
+  const newCard = { id: nextId(), suit, value };
+  cards.push(newCard);
+  res.status(201).json(newCard);
+});
+
+// DELETE /cards/:id - delete a card by id
+app.delete('/cards/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const idx = cards.findIndex(c => c.id === id);
+  if (idx === -1) {
+    return res.status(404).json({ message: `Card with ID ${id} not found` });
+  }
+  const [removed] = cards.splice(idx, 1);
+  res.status(200).json({
+    message: `Card with ID ${id} removed`,
+    card: removed
+  });
+});
+
+// Global 404 for unmatched routes
+app.use((_req, res) => {
+  res.status(404).json({ message: 'Route not found' });
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Cards API running at http://localhost:${PORT}`);
+});
