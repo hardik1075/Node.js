@@ -1,0 +1,137 @@
+// index.js
+// Concurrent Ticket Booking with Seat Lock + Expiry (single file, CommonJS)
+
+const express = require('express');
+const app = express();
+app.use(express.json());
+
+// CONFIG
+const TOTAL_SEATS = 20;              // adjust as needed
+const LOCK_WINDOW_MS = 60_000;       // 1 minute lock expiry
+
+// Seat states: available | locked | booked
+// Structure: seats[seatId] = { status, lockedBy, lockedAt }
+const seats = {};
+for (let i = 1; i <= TOTAL_SEATS; i++) {
+  seats[i] = { status: 'available', lockedBy: null, lockedAt: null };
+}
+
+// Helper: validate seat id
+function getSeatId(param) {
+  const id = Number(param);
+  if (!Number.isInteger(id) || id < 1 || id > TOTAL_SEATS) return null;
+  return id;
+}
+
+// Helper: purge expired lock for a seat
+function purgeIfExpired(id) {
+  const s = seats[id];
+  if (s.status === 'locked' && s.lockedAt) {
+    const age = Date.now() - s.lockedAt;
+    if (age >= LOCK_WINDOW_MS) {
+      s.status = 'available';
+      s.lockedBy = null;
+      s.lockedAt = null;
+    }
+  }
+}
+
+// Health/info
+app.get('/', (_req, res) => {
+  res.json({
+    service: 'Concurrent Ticket Booking API',
+    endpoints: ['GET /seats', 'POST /lock/:id', 'POST /confirm/:id', 'POST /release/:id'],
+    lockWindowSeconds: LOCK_WINDOW_MS / 1000
+  });
+});
+
+// GET /seats - list all seats with current statuses (auto-purges expired locks)
+app.get('/seats', (_req, res) => {
+  for (let i = 1; i <= TOTAL_SEATS; i++) purgeIfExpired(i);
+  const view = {};
+  for (let i = 1; i <= TOTAL_SEATS; i++) view[i] = { status: seats[i].status };
+  res.status(200).json(view);
+});
+
+// POST /lock/:id - lock seat for a caller token (simulating a user/session)
+// Optional header X-User-Id used as the locker identity; if absent, a random token is assigned.
+app.post('/lock/:id', (req, res) => {
+  const id = getSeatId(req.params.id);
+  if (!id) return res.status(400).json({ message: 'Invalid seat id' });
+
+  purgeIfExpired(id);
+  const user = req.header('X-User-Id') || `anon-${Math.random().toString(36).slice(2, 8)}`;
+  const s = seats[id];
+
+  if (s.status === 'booked') {
+    return res.status(409).json({ message: `Seat ${id} already booked` });
+  }
+  if (s.status === 'locked') {
+    if (s.lockedBy === user) {
+      // Renew caller’s lock window
+      s.lockedAt = Date.now();
+      return res.status(200).json({ message: `Seat ${id} lock renewed for user ${user}. Confirm within 1 minute.` });
+    }
+    return res.status(423).json({ message: `Seat ${id} is locked by another user` });
+  }
+
+  // Lock it for this user
+  s.status = 'locked';
+  s.lockedBy = user;
+  s.lockedAt = Date.now();
+  return res.status(200).json({ message: `Seat ${id} locked successfully. Confirm within 1 minute.`, user });
+});
+
+// POST /confirm/:id - confirm booking if seat locked by caller and not expired
+app.post('/confirm/:id', (req, res) => {
+  const id = getSeatId(req.params.id);
+  if (!id) return res.status(400).json({ message: 'Invalid seat id' });
+
+  purgeIfExpired(id);
+  const user = req.header('X-User-Id') || '';
+  const s = seats[id];
+
+  if (s.status === 'booked') {
+    return res.status(409).json({ message: `Seat ${id} already booked` });
+  }
+  if (s.status !== 'locked') {
+    return res.status(400).json({ message: 'Seat is not locked and cannot be booked' });
+  }
+  if (!user || s.lockedBy !== user) {
+    return res.status(403).json({ message: 'Only the locker can confirm this seat' });
+  }
+
+  // Confirm booking
+  s.status = 'booked';
+  s.lockedBy = null;
+  s.lockedAt = null;
+  return res.status(200).json({ message: `Seat ${id} booked successfully!` });
+});
+
+// POST /release/:id - allow a locker to release its lock early (optional helper)
+app.post('/release/:id', (req, res) => {
+  const id = getSeatId(req.params.id);
+  if (!id) return res.status(400).json({ message: 'Invalid seat id' });
+
+  purgeIfExpired(id);
+  const user = req.header('X-User-Id') || '';
+  const s = seats[id];
+
+  if (s.status !== 'locked') {
+    return res.status(400).json({ message: 'Seat is not locked' });
+  }
+  if (!user || s.lockedBy !== user) {
+    return res.status(403).json({ message: 'Only the locker can release this seat' });
+  }
+
+  s.status = 'available';
+  s.lockedBy = null;
+  s.lockedAt = null;
+  return res.status(200).json({ message: `Seat ${id} lock released` });
+});
+
+// Fallback 404
+app.use((_req, res) => res.status(404).json({ message: 'Route not found' }));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Ticket Booking API running at http://localhost:${PORT}`));
